@@ -23,31 +23,13 @@
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
         import { getAuth, signInAnonymously, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-        import { getFirestore, collection, addDoc, doc, setDoc, deleteDoc, onSnapshot, getDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        import { getFirestore, collection, addDoc, doc, setDoc, deleteDoc, onSnapshot } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
         const appId = typeof __app_id !== 'undefined' ? __app_id : 'si-bunda-app';
         const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : null;
 
         let db = null;
         let auth = null;
-        let activeWebhookUrl = localStorage.getItem('si_bunda_webhook') || '';
-
-        // Helper function to send log to Google Sheets Webhook from any device
-        async function sendToWebhook(logData, webhookUrl) {
-            const targetUrl = webhookUrl || activeWebhookUrl;
-            if (!targetUrl) return;
-            try {
-                await fetch(targetUrl, {
-                    method: 'POST',
-                    mode: 'no-cors',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(logData)
-                });
-                console.log("Log successfully pushed to Google Sheets Webhook");
-            } catch(e) {
-                console.error("Google Sheets Webhook send error:", e);
-            }
-        }
 
         window.initFirebaseSync = async function(appScope) {
             if (!firebaseConfig) {
@@ -66,18 +48,18 @@
                     await signInAnonymously(auth);
                 }
 
-                // Listen for Webhook Settings in Cloud Firestore so all user devices know where to send logs
-                const settingsDoc = doc(db, 'artifacts', appId, 'public', 'data', 'settings', 'config');
-                onSnapshot(settingsDoc, (snap) => {
-                    if (snap.exists() && snap.data().googleSheetWebhook) {
-                        activeWebhookUrl = snap.data().googleSheetWebhook;
-                        localStorage.setItem('si_bunda_webhook', activeWebhookUrl);
-                        if (appScope) appScope.syncWebhookUrl(activeWebhookUrl);
-                        if (window.siBundaInstance) window.siBundaInstance.syncWebhookUrl(activeWebhookUrl);
+                // Helper: Save Visitor Log to Cloud Firestore
+                window.dbAddVisitorLog = async function(logData) {
+                    if (!db) return;
+                    try {
+                        const colRef = collection(db, 'artifacts', appId, 'public', 'data', 'visitor_logs');
+                        await addDoc(colRef, logData);
+                    } catch(e) {
+                        console.error("Firestore log write error:", e);
                     }
-                }, (err) => console.error("Firestore settings listener error:", err));
+                };
 
-                // Real-time listener for Visitor Logs across ALL devices
+                // Real-time listener for Visitor Logs across devices
                 const logsCol = collection(db, 'artifacts', appId, 'public', 'data', 'visitor_logs');
                 onSnapshot(logsCol, (snapshot) => {
                     const logs = [];
@@ -85,46 +67,20 @@
                         logs.push({ id: docSnap.id, ...docSnap.data() });
                     });
                     logs.sort((a, b) => (b.timestamp || '').localeCompare(a.timestamp || ''));
-                    if (appScope) {
+                    if (logs.length > 0) {
                         appScope.syncFirestoreLogs(logs);
-                    }
-                    if (window.siBundaInstance) {
-                        window.siBundaInstance.syncFirestoreLogs(logs);
                     }
                 }, (err) => console.error("Firestore logs listener error:", err));
 
-                // Save Visitor Log to Cloud Firestore & Google Sheets from ANY device
-                window.dbAddVisitorLog = async function(logData) {
-                    // 1. Send to Google Sheets Webhook immediately
-                    if (activeWebhookUrl) {
-                        sendToWebhook(logData, activeWebhookUrl);
-                    } else {
-                        // Fetch webhook setting directly from Firestore if not yet cached on this device
-                        try {
-                            const configSnap = await getDoc(settingsDoc);
-                            if (configSnap.exists() && configSnap.data().googleSheetWebhook) {
-                                activeWebhookUrl = configSnap.data().googleSheetWebhook;
-                                sendToWebhook(logData, activeWebhookUrl);
-                            }
-                        } catch(e) {
-                            console.error("Config fetch error:", e);
-                        }
+                // Real-time listener for Webhook Settings
+                const settingsDoc = doc(db, 'artifacts', appId, 'public', 'data', 'settings', 'config');
+                onSnapshot(settingsDoc, (snap) => {
+                    if (snap.exists() && snap.data().googleSheetWebhook) {
+                        appScope.syncWebhookUrl(snap.data().googleSheetWebhook);
                     }
-
-                    // 2. Add to Cloud Firestore (This instantly triggers onSnapshot on all Admin devices)
-                    if (db) {
-                        try {
-                            const colRef = collection(db, 'artifacts', appId, 'public', 'data', 'visitor_logs');
-                            await addDoc(colRef, logData);
-                        } catch(e) {
-                            console.error("Firestore log write error:", e);
-                        }
-                    }
-                };
+                }, (err) => console.error("Firestore settings listener error:", err));
 
                 window.dbSaveWebhook = async function(url) {
-                    activeWebhookUrl = url;
-                    localStorage.setItem('si_bunda_webhook', url);
                     if (!db) return;
                     const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'settings', 'config');
                     await setDoc(docRef, { googleSheetWebhook: url }, { merge: true });
@@ -138,8 +94,7 @@
                         snapshot.forEach(docSnap => {
                             videoList.push({ id: docSnap.id, ...docSnap.data() });
                         });
-                        const targetScope = appScope || window.siBundaInstance;
-                        if (targetScope) targetScope.syncFirestoreVideos(videoList);
+                        appScope.syncFirestoreVideos(videoList);
                     }
                 }, (err) => console.error("Firestore videos listener error:", err));
 
@@ -160,10 +115,29 @@
                 console.error("Firebase Auth/Init error:", e);
             }
         };
+    </script>
 
-        // Auto-initialize if Alpine is already mounted or when called
-        if (window.siBundaInstance) {
-            window.initFirebaseSync(window.siBundaInstance);
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        bunda: {
+                            pink: '#FF7B9C',
+                            lightpink: '#FFF0F4',
+                            teal: '#2EC4B6',
+                            lightteal: '#E6F9F7',
+                            yellow: '#FF9F1C',
+                            softbg: '#FFFBF9',
+                            dark: '#2D3748',
+                            card: '#FFFFFF'
+                        }
+                    },
+                    fontFamily: {
+                        sans: ['Nunito', 'Inter', 'sans-serif']
+                    }
+                }
+            }
         }
     </script>
 
@@ -1246,7 +1220,6 @@
                 },
 
                 initApp() {
-                    window.siBundaInstance = this;
                     this.selectedPdf = this.pdfBooks[0];
 
                     // Persistent Local Webhook & Admin Session
@@ -1364,15 +1337,17 @@
                         timestamp: timestampStr
                     };
 
-                    // Add locally for instant local feedback
+                    // Add locally
                     this.visitorLogs.unshift(newLog);
                     localStorage.setItem('si_bunda_logs', JSON.stringify(this.visitorLogs));
 
-                    // Send to Cloud Firestore & Google Sheets Webhook (Cross-device synced)
+                    // Send real-time to Cloud Firestore
                     if (window.dbAddVisitorLog) {
                         window.dbAddVisitorLog(newLog);
-                    } else if (this.googleSheetWebhook) {
-                        // Fallback direct webhook call if Firebase module hasn't initialized yet
+                    }
+
+                    // Send real-time to Google Sheets Webhook
+                    if (this.googleSheetWebhook) {
                         fetch(this.googleSheetWebhook, {
                             method: 'POST',
                             mode: 'no-cors',
