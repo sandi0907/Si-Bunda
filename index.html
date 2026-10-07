@@ -203,10 +203,12 @@
                         </div>
                     </template>
 
-                    <button @click="openAdminSection()" :class="isAdmin ? 'bg-purple-600 text-white hover:bg-purple-700' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'" class="px-3.5 py-2 rounded-xl text-xs sm:text-sm font-bold flex items-center gap-1.5 transition-all shadow-sm">
-                        <i class="fa-solid" :class="isAdmin ? 'fa-user-shield' : 'fa-lock'"></i>
-                        <span x-text="isAdmin ? 'Admin Dashboard' : 'Login Admin'"></span>
-                    </button>
+                    <template x-if="isAdmin">
+                        <button @click="openAdminSection()" class="bg-purple-600 hover:bg-purple-700 text-white px-3.5 py-2 rounded-xl text-xs sm:text-sm font-bold flex items-center gap-1.5 transition-all shadow-sm">
+                            <i class="fa-solid fa-user-shield"></i>
+                            <span>Admin Dashboard</span>
+                        </button>
+                    </template>
 
                     <button @click="mobileMenuOpen = !mobileMenuOpen" class="md:hidden p-2 text-gray-600 hover:text-bunda-pink focus:outline-none">
                         <i class="fa-solid" :class="mobileMenuOpen ? 'fa-xmark text-2xl' : 'fa-bars text-2xl'"></i>
@@ -1335,22 +1337,23 @@
                         timestamp: timestampStr
                     };
 
+                    // Add locally
                     this.visitorLogs.unshift(newLog);
                     localStorage.setItem('si_bunda_logs', JSON.stringify(this.visitorLogs));
 
-                    // Send to Cloud Firestore
+                    // Send real-time to Cloud Firestore
                     if (window.dbAddVisitorLog) {
                         window.dbAddVisitorLog(newLog);
                     }
 
-                    // Send to Google Sheets Webhook
+                    // Send real-time to Google Sheets Webhook
                     if (this.googleSheetWebhook) {
                         fetch(this.googleSheetWebhook, {
                             method: 'POST',
                             mode: 'no-cors',
                             headers: { 'Content-Type': 'application/json' },
                             body: JSON.stringify(newLog)
-                        }).catch(err => console.error(err));
+                        }).catch(err => console.error("Webhook POST Error:", err));
                     }
 
                     this.showWelcomeModal = false;
@@ -1360,7 +1363,6 @@
                 verifyAdminLogin(source) {
                     if (this.adminPasswordInput === 'dinda0909') {
                         this.isAdmin = true;
-                        // Save session to localStorage so refresh keeps admin session
                         localStorage.setItem('si_bunda_admin_session', 'true');
                         this.showWelcomeModal = false;
                         this.showAdminLoginModal = false;
